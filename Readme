@@ -1,0 +1,53 @@
+Steps in DoTA-seq Analysis workflow
+
+1. Demultiplexing raw sequence files
+DoTA-seq uses the Illumina I7 index read to read out the cell barcodes of the library. Thus, one needs to obtain the raw I7 read file from the sequencer in addition to the raw read 1 or read 2 files. Use R4-parser.ipynb to quality filter the barcodes and associate barcodes with their amplicon reads.
+
+2. Mapping reads to reference
+Using the output of R4-parser, we map the resulting barcode-associated reads to a reference database of expected amplicons. This database typically consists of the targeted genes (and different orientations/sequence permutations of them) that you expect to see, as well as potential taxonomic marker genes that you expect to see. For small databases, we use Bowtie2 to perform the mapping, obtaining a SAM formatted output. For large highly repetitive databases like the SILVA16S database, we must use a different method (OTU-clustering + Mapping) described later.
+
+3. Filtering of mapped reads
+Using the outputs of Bowtie2 mapping to the database of expected amplicons, we group the reads by barcode, perform quality control and filtering on the grouped reads, and generate a summary of the output. The steps are detailed in the SAM-parser.ipynb Jupyter notebook.
+
+4. Analysis of filtered grouped read data
+Analysis of the resulting data from SAM-parser depends on the application at hand. For analysis involving defined multi-species communities, the workflow is shown in Analysis-Synthetic-community.ipynb.
+
+For analysis of communities of unknown composition, the classification of taxonomic markers is performed separately from the mapping of target amplicons by Bowtie2 as follows:
+
+    # Create conda env for the analysis (uses python 2.7 and qiime)
+    mamba create -p /slowdata/yml_environments/qiime python=2.7 qiime matplotlib mock nose seqtk -c bioconda 
+
+    # Activate the conda env
+    conda activate /slowdata/yml_environments/qiime
+
+    # Make blastDB of the representative 16S database
+    # Make blastn db
+    makeblastdb -in /storage1/databases/QIIME2/qiime/SILVA_132_QIIME_release/rep_set/rep_set_16S_only/99/silva_132_99_16S.fna -out silva_132_97_16S -dbtype 'nucl'
+
+    # Within 'qiime' conda environment 
+    # Convert fastq to fasta
+    seqtk seq -q20 -a $FILE.fastq > $FILE.fasta
+
+    # Chimera check
+    usearch -uchime2_ref reads/$FILE.fasta -db /storage1/databases/QIIME2/qiime/SILVA_132_QIIME_release/rep_set/rep_set_16S_only/97/silva_132_97_16S.fna -strand plus -uchimeout reads/uchimeout.txt -notmatched reads/$FILE.nochimera.fasta -mode sensitive
+
+    # Within 'mmseqs2_v13.45111' conda environment
+    # Run mmseqs to make OTUs
+    mkdir $FILE;mmseqs easy-linclust reads/$FILE.nochimera.fasta 37-2-R4A/clusterRes tmp --min-seq-id 0.97 -c 0.95 --cov-mode 1 --threads 10;rm -r tmp
+
+    #Run these python scripts to parse the results (NOTE: Edit the scripts to change the filenames and paths according to your own file names)
+    # Parse OTU clustering result
+    python 01.parse_OTU_clustering_result.py
+
+    # Run blastn
+    blastn -query $FILE/clusterRes_rep_seq.fasta -db silva_132_97_16S.wo_Mycobacteria -out 37-2-R4A/$FILE.nochimera_rep.blastn_result.txt -num_threads 10 -evalue 0.001 -perc_identity 90 -outfmt 6 -max_target_seqs 1
+
+    # Parse blastn result
+    python 02.parse_blastn_result.py
+
+    # Summarize hits from each barcode
+    python 03.summarize_hits_from_each_barcode.py
+
+Following the above workflow, a table is created for the taxonomic classification of marker genes in each barcode group. We combine that we the results of other target gene mapping using Bowtie2 and then perform quality controls of the combined results and analyze the resulting data using Unknown-sample-analysis.ipynb Jupyter notebook.
+
+For analysis of single species phase variation, the workflow is as follows: The output of SAMparser is analyzed using an Rscript (CPS-analysis.Rscript), which filters out barcodes that do not have enough reads for each of the loci and cells with conflicting reads for any loci (both ON and OFF). It outputs an excel file called X_summary.xlsx which contains the details of the analysis, including how many barcodes passed the quality check. The results of this file contains a table of each CPS promoter variant and the number of cells sequenced, which is extracted as a separate table with a .nodes extension to be used to plot the network representation of the populations using the CPS-network-analysis.ipynb Jupyter notebook.
